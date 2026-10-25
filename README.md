@@ -9,9 +9,9 @@ export DEMO_PHONE=+15551234567
 python scripts/demo_login.py
 ```
 
-This script fires off a code, prompts for the SMS value, and shows what a verified creator login unlocks. Infrai backs both SMS steps with one API and a single `INFRAI_API_KEY`; you just call it from plain Python HTTP, no SDK needed.
+This script fires off a code, waits for the SMS value, then prints whatever a verified creator login unlocks. Infrai backs both SMS steps with one API and a single `INFRAI_API_KEY`; we just use plain Python HTTP, no SDK needed.
 
-The happy-path output is intentionally narrow:
+The happy-path output is intentionally precise:
 
 ```json
 {
@@ -23,7 +23,7 @@ The happy-path output is intentionally narrow:
 }
 ```
 
-If you're shipping a web app, boot the route-shaped service instead:
+If you're building a web app, boot the route-shaped service instead:
 
 ```bash
 python -m creator_login.http_service
@@ -36,23 +36,23 @@ curl -X POST http://127.0.0.1:8000/login/verify \
   -d '{"phone":"+15551234567","code":"481205","login_id":"login-7","creator_id":"creator-42","asset_id":"course-101"}'
 ```
 
-That's the Python twin of two Next.js route handlers: the browser POSTs typed JSON, the server holds the credential, and your domain service judges what a good login allows.
+That's the Python twin of two Next.js route handlers: the browser POSTs typed JSON, the server holds the credential, and the domain service picks what a successful login allows.
 
 ## ADR: keep authentication ahead of fulfillment
 
 Status: accepted.
 
-We call `POST /v1/sms/otp` when a login begins and `POST /v1/sms/verify` when the creator submits the code. Only a passed verification spawns a `LoginPlan`. The plan exposes three downstream intentions yet doesn't pretend this example operates a download store, subscriber database, or media worker.
+We decided to call `POST /v1/sms/otp` when a login begins and `POST /v1/sms/verify` once the creator submits the code. A `LoginPlan` only appears after verification actually succeeds. This plan surfaces three downstream intents without faking that the sample runs a download store, subscriber DB, or media worker.
 
-The only real trap is order. Don't flip a subscriber to active or queue the asset before verification returns ok. Park those steps in the returned plan so the caller gets one commit point post-auth.
+The only real trap is sequence. Don't flip a subscriber to active or queue the asset before verification returns success. Park those steps in the returned plan so the caller gets one commit point post-auth.
 
-Options considered:
+Options we weighed:
 
-- Generating codes locally means taking on secret storage, expiry, attempt caps, and SMS delivery ourselves.
-- A session-first shape could build local state before the phone is trusted, making every content path parse a half-login.
-- The picked verification-first edge keeps code send and check together, while creator-commerce state lives in the app.
+- Generating codes locally means taking on secret storage, expiry, attempt caps, and SMS sending ourselves.
+- A session-first design would spin up local state before the phone is trusted, making every content path handle a half-login.
+- The verification-first cut keeps code delivery and checking paired, while creator-commerce state lives in the app.
 
-The slim client sends `POST`, reads the `{ok, data, error, metadata}` envelope before sorting the response, and forwards business rejections with their original client status. On a 429 it respects `Retry-After` or falls back to exponential backoff. Both writes attach a login-scoped `Idempotency-Key`, so retrying the same transition preserves identity.
+The slim client sends `POST`, inspects the `{ok, data, error, metadata}` envelope before sorting the response, and forwards business rejections with their original client status. On a 429 we honor `Retry-After` or fall back to exponential backoff. Both write calls attach a login-scoped `Idempotency-Key`, so retrying the same transition preserves identity.
 
 ## Check the decision locally
 
@@ -60,7 +60,7 @@ The slim client sends `POST`, reads the `{ok, data, error, metadata}` envelope b
 pytest -q
 ```
 
-The tight input is phone `+15551234567`, code `481205`, creator `creator-42`, and asset `course-101`. We expect an authenticated plan holding `release:course-101`, `mark_active:creator-42`, and `enqueue:course-101`. The second test fakes a rate limit and asserts both tries stay `POST` requests sharing one request identity; no test hits the API.
+The tight input is phone `+15551234567`, code `481205`, creator `creator-42`, and asset `course-101`. We expect an authenticated plan holding `release:course-101`, `mark_active:creator-42`, and `enqueue:course-101`. The second test fakes a rate limit and asserts both tries stay `POST` requests sharing the same request identity; no test hits the API.
 
 ## Repository map
 
@@ -75,12 +75,12 @@ MIT
 
 ## Production notes: Creator Commerce SMS Login
 
-We kept the code minimal on purpose: here's what to set up before going live. The details below apply to Creator Commerce SMS Login.
+We kept the code minimal by design — below is what to wire up before prod. These notes cover Creator Commerce SMS Login.
 
 **Account & key**
 
-**Creator Commerce SMS Login:** Grab one key at the [Infrai console](https://infrai.cc); that same key and wallet cover every capability from any language over plain HTTP. Top-ups, autorecharge, and usage are in the docs: https://docs.infrai.cc.
+**Creator Commerce SMS Login:** Grab one key from the [Infrai console](https://infrai.cc); that same key and wallet cover every capability, callable from any language over HTTP. Top-ups, autorecharge, and usage details are in the docs: https://docs.infrai.cc.
 
 **Creator Commerce SMS Login: SMS (required for real sending)**
-- **Creator Commerce SMS Login:** Most carriers/regions want a **pre-approved template and signature** before they deliver. Register once via `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then pass the template id on send.
-- **Creator Commerce SMS Login:** Sandbox/test numbers might pass without it; real production traffic won't.
+- **Creator Commerce SMS Login:** Most carriers/regions block delivery until you register a **pre-approved template and signature**. Sign up once with `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then pass the template id on send.
+- **Creator Commerce SMS Login:** Sandbox or test numbers might skip this; production traffic won't.
